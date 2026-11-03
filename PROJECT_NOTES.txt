@@ -1,0 +1,64 @@
+ProxyCraft 1.0.0 — package notes
+
+Layout:
+- proxycraft/core.py: FFmpeg detection, probing, command building and the parallel batch engine. No Qt dependency.
+- proxycraft/main.py: PySide6 window, settings and dialogs (same theme and style as SphereCraft 360).
+- proxycraft/help.py: User Guide dialog.
+- launcher.py: entry point for the Windows build. Run from source with: python -m proxycraft
+
+Encoding pipeline (chosen per file):
+- NVIDIA (CUDA available and NVENC opens): -hwaccel cuda -hwaccel_output_format cuda, scale_cuda, then
+  h264_nvenc / hevc_nvenc directly, or hwdownload + prores_ks for ProRes.
+- Codecs the GPU cannot decode (ProRes, DNxHR, CineForm…) decode on the CPU. If GPU decoding fails for a
+  file, it is retried on the CPU automatically.
+- CPU path: scale with flags=area (fastest good filter for 2x/4x reductions in testing), then the first
+  hardware encoder that test-opened (NVENC, Quick Sync, AMF) or libx264 / libx265.
+- Every listed hardware encoder is test-opened at startup; FFmpeg builds list all vendors' encoders.
+- Two files are encoded in parallel by default (fastest in testing on GPU and CPU).
+
+Proxy properties:
+- -noautorotate keeps the coded frame layout and the rotation flag, so proxies match originals.
+- -fps_mode passthrough keeps every frame and timestamp; -map_metadata 0 keeps timecode.
+- All audio tracks: copied when the container accepts them, else PCM (MOV) or AAC 192k (MP4).
+- H.264/H.265: keyframe every second, no B-frames. H.264 8-bit 4:2:0; H.265 keeps 10-bit sources at 10-bit.
+- Output is written to <name>.part and renamed on success; cancelled/failed files are deleted.
+
+Build:
+- Run build.bat on Windows with Python 3.10 or newer and an internet connection.
+- The build uses PySide6 deployment and Nuitka 4.3.4 to create dist/ProxyCraft.exe.
+- The EXE icon is embedded from assets/ProxyCraft.ico. Version is set in proxycraft/__init__.py and in
+  pysidedeploy.spec (--windows-product-version / --windows-file-version); update both for each release.
+- Runtime: the onefile EXE carries the Visual C++ runtime (vcruntime140*.dll, msvcp140*.dll from Python
+  and PySide6). It uses only the Universal CRT (ucrtbase.dll) from Windows, which is part of Windows 10+.
+  Nuitka's "Cannot find Windows Runtime DLLs" warning refers to that UCRT and only matters for
+  Windows 7/8.1, which are not supported (the installer has MinVersion=10.0).
+- Settings are stored with QSettings under PitKub/ProxyCraft (Windows registry).
+- build.bat also creates dist/ProxyCraft-<version>-Windows.zip with the EXE, README, LICENSE and the
+  third-party licence texts (Qt/PySide6 are LGPL-3.0 and must ship with their licence).
+
+Time left:
+- core.TimeEstimator: work = frames x source pixels (decoding dominates and scales with frame size).
+  Speed from the last 30 s of samples, starting at the first encoded frame; skipped/failed/cancelled
+  jobs are excluded; existing proxies are marked Skipped before encoding starts. Lightly smoothed.
+- Tested on a mixed batch (HD then 4K, 3 skipped, 1 broken): 19% average error vs 71% for the
+  previous all-frames average.
+
+Installer:
+- installer/ProxyCraft.iss (Inno Setup 6), compiled by build.bat when ISCC.exe is found.
+- Per-user install by default (no admin, %LOCALAPPDATA%\Programs\ProxyCraft); the first page offers
+  all users (Program Files). The folder page is always shown. English and Polish.
+- AppId {1BDF2899-8598-420E-8C23-CE263FD20CBF} must never change (upgrades and uninstall rely on it).
+
+Included FFmpeg:
+- get_ffmpeg.ps1 downloads one pinned BtbN FFmpeg-Builds release (GPL, shared DLLs), checks its SHA-256,
+  and keeps ffmpeg.exe, ffprobe.exe, the DLLs and LICENSE.txt in vendor/ffmpeg. It also downloads the
+  matching FFmpeg source and build scripts into vendor/release-sources for the GitHub release.
+- build.bat copies vendor/ffmpeg to dist/ffmpeg and makes two ZIPs: with and without FFmpeg.
+- Lookup order: a path the user chose in Settings (if the file still exists), then ffmpeg\ next to the
+  EXE (vendor\ffmpeg when run from source), then PATH and C:\ffmpeg\bin. The included path is never
+  saved, so moving the app folder keeps working.
+- To update FFmpeg: change the pinned values at the top of get_ffmpeg.ps1, delete vendor\, rebuild,
+  and update the version/commit lines in THIRD_PARTY_NOTICES.md and README.md.
+
+License:
+- ProxyCraft code: MIT (LICENSE). Third-party components: THIRD_PARTY_NOTICES.md and licenses/.
