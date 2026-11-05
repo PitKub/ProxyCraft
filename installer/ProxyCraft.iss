@@ -1,12 +1,12 @@
 ; ProxyCraft installer (Inno Setup 6). build.bat compiles it after building dist\.
-;   ISCC.exe /DAppVersion=1.0.0 installer\ProxyCraft.iss
+;   ISCC.exe /DAppVersion=1.0.1 installer\ProxyCraft.iss
 ;
 ; The installer asks whether to install for the current user (no administrator
 ; rights, default folder %LOCALAPPDATA%\Programs\ProxyCraft) or for all users
 ; (C:\Program Files\ProxyCraft), and lets the user choose another folder.
 
 #ifndef AppVersion
-  #define AppVersion "1.0.0"
+  #define AppVersion "1.0.1"
 #endif
 
 [Setup]
