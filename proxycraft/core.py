@@ -9,6 +9,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -36,6 +37,22 @@ GPU_DECODABLE = {
     "h264", "hevc", "av1", "vp9", "vp8", "mpeg2video", "mpeg1video",
     "mpeg4", "vc1", "mjpeg",
 }
+
+# Codecs that Windows D3D11 video decoding handles on Intel, AMD and NVIDIA GPUs.
+D3D11_DECODABLE = {"h264", "hevc", "av1", "vp9", "mpeg2video", "vc1", "wmv3"}
+# Source pixel formats D3D11 decodes, and the format its frames are downloaded in.
+# Other formats (4:2:2, 4:4:4, 12-bit…) decode on the CPU.
+D3D11_FORMATS = {
+    "yuv420p": "nv12", "yuvj420p": "nv12", "nv12": "nv12",
+    "yuv420p10le": "p010le", "p010le": "p010le",
+}
+
+# How a file is decoded. Each file tries a GPU method first when one applies,
+# then the CPU.
+DECODE_CUDA = "cuda"        # NVIDIA: decode, resize and (H.264/H.265) encode on the GPU
+DECODE_D3D11 = "d3d11va"    # any GPU: decode on the GPU, resize on the CPU
+DECODE_CPU = "cpu"
+DECODE_LABELS = {DECODE_CUDA: "GPU", DECODE_D3D11: "GPU decode", DECODE_CPU: "CPU"}
 
 
 @dataclass(frozen=True)
@@ -115,6 +132,9 @@ class MediaInfo:
     rotation: int = 0
     audio_codecs: list = field(default_factory=list)
     color: dict = field(default_factory=dict)
+    timecode: str = ""
+    frames_exact: bool = False    # frame count stored in the file, not estimated
+    duration_exact: bool = False  # video stream duration, not the whole file's
 
     @property
     def is_10bit(self) -> bool:
@@ -144,6 +164,23 @@ def _fraction(value) -> float:
         return _number(value)
 
 
+def _tag(tags, name: str) -> str:
+    """A metadata tag, whatever its capitalisation (Matroska uses upper case)."""
+    for key, value in (tags or {}).items():
+        if key.lower() == name:
+            return str(value)
+    return ""
+
+
+def _clock_seconds(value: str) -> float:
+    """Seconds from "HH:MM:SS.fraction", as Matroska stores stream durations."""
+    try:
+        h, m, s = value.split(":")
+        return int(h) * 3600 + int(m) * 60 + float(s)
+    except (AttributeError, ValueError):
+        return 0.0
+
+
 def probe_media(ffprobe: str, path) -> MediaInfo:
     path = Path(path)
     p = _run([ffprobe, "-v", "error", "-show_format", "-show_streams", "-of", "json", str(path)])
@@ -159,12 +196,22 @@ def probe_media(ffprobe: str, path) -> MediaInfo:
 
     fps = _fraction(video.get("avg_frame_rate")) or _fraction(video.get("r_frame_rate"))
     fmt = data.get("format", {})
-    duration = _number(video.get("duration")) or _number(fmt.get("duration"))
+    tags = video.get("tags") or {}
+    duration = _number(video.get("duration")) or _clock_seconds(_tag(tags, "duration"))
+    duration_exact = duration > 0
+    if not duration:
+        duration = _number(fmt.get("duration"))
     frames = int(_number(video.get("nb_frames")))
+    frames_exact = frames > 0
     if frames <= 0:
         frames = int(round(duration * fps))
+    # MOV keeps timecode in its own track; other formats on the video stream
+    # or the file.
+    timecode = (_tag(tags, "timecode") or _tag(fmt.get("tags"), "timecode")
+                or next((_tag(s.get("tags"), "timecode") for s in streams
+                         if _tag(s.get("tags"), "timecode")), ""))
 
-    rotation = _number((video.get("tags") or {}).get("rotate"))
+    rotation = _number(tags.get("rotate"))
     for side_data in video.get("side_data_list") or []:
         if "rotation" in side_data:
             rotation = _number(side_data.get("rotation"))
@@ -189,7 +236,75 @@ def probe_media(ffprobe: str, path) -> MediaInfo:
         audio_codecs=[(s.get("codec_name") or "").lower()
                       for s in streams if s.get("codec_type") == "audio"],
         color=color,
+        timecode=timecode,
+        frames_exact=frames_exact,
+        duration_exact=duration_exact,
     )
+
+
+# --------------------------------------------------------------------------
+# Proxy check
+# --------------------------------------------------------------------------
+
+@dataclass
+class ProxyCheck:
+    """Whether a proxy will relink to its original."""
+    problems: list = field(default_factory=list)
+    notes: list = field(default_factory=list)   # what could only be checked roughly
+
+    @property
+    def ok(self) -> bool:
+        return not self.problems
+
+    def text(self) -> str:
+        lines = list(self.problems) or ["The proxy matches the original."]
+        return "\n".join(lines + self.notes)
+
+
+def compare_media(source: MediaInfo, proxy: MediaInfo) -> ProxyCheck:
+    """Compare what editors use to relink: length, frame rate, timecode, audio
+    tracks, rotation and picture shape."""
+    check = ProxyCheck()
+    fps = source.fps or proxy.fps or 25.0
+    if source.frames_exact and proxy.frames_exact:
+        if source.frames != proxy.frames:
+            check.problems.append(f"Frame count: original {source.frames}, proxy {proxy.frames}.")
+    else:
+        # Without a stored frame count, compare durations: within 1.5 frames,
+        # or half a second when only the whole file's duration is known.
+        exact = source.duration_exact and proxy.duration_exact
+        tolerance = max(1.5 / fps, 0.05) if exact else 0.5
+        if abs(source.duration - proxy.duration) > tolerance:
+            check.problems.append(f"Duration: original {source.duration:.3f} s, "
+                                  f"proxy {proxy.duration:.3f} s.")
+        check.notes.append("Length compared by duration, because the original does not "
+                           "store its frame count.")
+    if source.fps and proxy.fps and abs(source.fps - proxy.fps) > source.fps * 0.005:
+        check.problems.append(f"Frame rate: original {source.fps:.3f} fps, "
+                              f"proxy {proxy.fps:.3f} fps.")
+    if source.timecode and source.timecode != proxy.timecode:
+        check.problems.append(f"Timecode: original {source.timecode}, "
+                              f"proxy {proxy.timecode or 'none'}.")
+    if len(source.audio_codecs) != len(proxy.audio_codecs):
+        check.problems.append(f"Audio tracks: original {len(source.audio_codecs)}, "
+                              f"proxy {len(proxy.audio_codecs)}.")
+    if source.rotation != proxy.rotation:
+        check.problems.append(f"Rotation: original {source.rotation}°, proxy {proxy.rotation}°.")
+    if source.height and proxy.height:
+        a, b = source.width / source.height, proxy.width / proxy.height
+        if abs(a - b) > a * 0.02:
+            check.problems.append(f"Picture shape: original {source.width}×{source.height}, "
+                                  f"proxy {proxy.width}×{proxy.height}.")
+    return check
+
+
+def check_proxy(ffprobe: str, source: MediaInfo, proxy_path) -> ProxyCheck:
+    try:
+        proxy = probe_media(ffprobe, proxy_path)
+    except Exception as exc:
+        first = (str(exc).splitlines() or [""])[0]
+        return ProxyCheck(problems=[f"The proxy cannot be read. {first}".strip()])
+    return compare_media(source, proxy)
 
 
 # --------------------------------------------------------------------------
@@ -217,6 +332,8 @@ class Capabilities:
     working: dict = field(default_factory=lambda: {"h264": [], "h265": []})
     # NVIDIA decode + resize + encode without copying frames to the CPU.
     cuda_pipeline: bool = False
+    # D3D11 GPU decoding (Intel, AMD, NVIDIA), used when the CUDA pipeline is not.
+    d3d11_decode: bool = False
 
     def encoder(self, family: str) -> str:
         """Best encoder for CPU-decoded frames."""
@@ -230,6 +347,8 @@ class Capabilities:
         parts = []
         if self.cuda_pipeline:
             parts.append("Decode and resize: NVIDIA GPU, CPU fallback")
+        elif self.d3d11_decode:
+            parts.append("Decode: GPU (D3D11), CPU fallback. Resize: CPU")
         else:
             parts.append("Decode and resize: CPU")
         for family, name in (("h264", "H.264"), ("h265", "H.265")):
@@ -251,6 +370,30 @@ def _opens(ffmpeg: str, args: list[str]) -> bool:
     try:
         return _run([ffmpeg, "-hide_banner", "-loglevel", "error", *args, "-f", "null", "-"],
                     timeout=30).returncode == 0
+    except Exception:
+        return False
+
+
+def _d3d11_decodes(ffmpeg: str, caps: Capabilities) -> bool:
+    """True when D3D11 really decodes H.264 on the GPU.
+
+    A short H.264 sample is made first. Its frames are kept on the GPU and then
+    downloaded, which fails if FFmpeg quietly fell back to software decoding.
+    """
+    encoders = (["libx264"] if "libx264" in caps.encoders else []) + caps.working["h264"]
+    if not encoders:
+        return False
+    try:
+        with tempfile.TemporaryDirectory(prefix="proxycraft-") as tmp:
+            sample = os.path.join(tmp, "sample.mp4")
+            pix = "yuv420p" if encoders[0] == "libx264" else "nv12"
+            made = _run([ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+                         "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=25", "-frames:v", "10",
+                         "-c:v", encoders[0], "-pix_fmt", pix, sample])
+            if made.returncode != 0 or not os.path.isfile(sample):
+                return False
+            return _opens(ffmpeg, ["-hwaccel", "d3d11va", "-hwaccel_output_format", "d3d11",
+                                   "-i", sample, "-vf", "hwdownload,format=nv12"])
     except Exception:
         return False
 
@@ -296,6 +439,8 @@ def detect_capabilities(ffmpeg: str, refresh: bool = False) -> Capabilities:
             *test_input, "-vf",
             "hwupload_cuda,scale_cuda=640:360:format=nv12,hwdownload,format=nv12",
         ])
+    if not caps.cuda_pipeline and "d3d11va" in caps.hwaccels:
+        caps.d3d11_decode = _d3d11_decodes(ffmpeg, caps)
     caps.ok = True
     caps.details = caps.version
     _CAPS_CACHE[ffmpeg] = caps
@@ -358,20 +503,57 @@ def _audio_args(audio_codecs: list[str], container: str) -> list[str]:
     return args
 
 
+def decode_methods(caps: Capabilities, info: MediaInfo) -> list[str]:
+    """Decoding methods to try for a file, in order. The CPU is always last."""
+    if caps.cuda_pipeline and info.codec in GPU_DECODABLE:
+        return [DECODE_CUDA, DECODE_CPU]
+    if caps.d3d11_decode and info.codec in D3D11_DECODABLE and info.pix_fmt in D3D11_FORMATS:
+        return [DECODE_D3D11, DECODE_CPU]
+    return [DECODE_CPU]
+
+
+SOFTWARE_ENCODERS = {"h264": "libx264", "h265": "libx265"}
+
+
+def encode_attempts(caps: Capabilities, info: MediaInfo, preset: Preset) -> list[tuple[str, str]]:
+    """(decoding method, encoder) pairs to try in order; "" means the usual encoder.
+
+    The start-up test only opens each hardware encoder with 8-bit 720p frames, so
+    one can still fail on a file (10-bit on an older GPU, a frame size it does
+    not support…). The last attempt then uses x264 or x265 on the CPU.
+    """
+    attempts = [(decode, "") for decode in decode_methods(caps, info)]
+    software = SOFTWARE_ENCODERS.get(preset.family)
+    if software and caps.encoder(preset.family) != software and software in caps.encoders:
+        attempts.append((DECODE_CPU, software))
+    return attempts
+
+
+def attempt_label(decode: str, encoder: str) -> str:
+    if encoder:
+        return f"CPU, {encoder.removeprefix('lib')}"
+    return DECODE_LABELS[decode]
+
+
 def build_command(ffmpeg: str, info: MediaInfo, preset: Preset, output: Path,
-                  caps: Capabilities, use_gpu: bool) -> list[str]:
+                  caps: Capabilities, decode: str = DECODE_CPU, encoder: str = "") -> list[str]:
     w, h = info.proxy_size(preset.divisor)
     # -noautorotate keeps the proxy's frame layout identical to the original
     # and preserves its rotation flag, so editors relink it reliably.
     cmd = [ffmpeg, "-hide_banner", "-nostdin", "-y", "-loglevel", "error", "-noautorotate"]
-    if use_gpu:
+    if decode == DECODE_CUDA:
         cmd += ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
+    elif decode == DECODE_D3D11:
+        # Frames stay on the GPU until hwdownload, so a file the GPU cannot
+        # decode fails clearly (and is retried on the CPU) instead of quietly
+        # decoding in software.
+        cmd += ["-hwaccel", "d3d11va", "-hwaccel_output_format", "d3d11"]
     cmd += ["-i", str(info.path),
             "-map", "0:v:0", "-map", "0:a?", "-map_metadata", "0",
             # Keep every source frame and timestamp, so proxy and original
             # have the same frame count and timecode.
             "-fps_mode", "passthrough"]
-    if use_gpu:
+    if decode == DECODE_CUDA:
         fmt = "p010le" if info.is_10bit and preset.family != "h264" else "nv12"
         vf = f"scale_cuda={w}:{h}:format={fmt}"
         if preset.family == "prores":
@@ -383,7 +565,12 @@ def build_command(ffmpeg: str, info: MediaInfo, preset: Preset, output: Path,
     else:
         # "area" is the fastest good-quality filter for 2× and 4× reductions.
         vf = f"scale={w}:{h}:flags=area"
-        codec = "prores_ks" if preset.family == "prores" else caps.encoder(preset.family)
+        if decode == DECODE_D3D11:
+            vf = f"hwdownload,format={D3D11_FORMATS[info.pix_fmt]},{vf}"
+        if preset.family == "prores":
+            codec = "prores_ks"
+        else:
+            codec = encoder or caps.encoder(preset.family)
         gpu_frames = False
     cmd += ["-vf", vf, *_video_args(preset, codec, info, gpu_frames)]
     for key, value in info.color.items():
@@ -456,6 +643,7 @@ class Job:
     status: str = "Waiting"
     message: str = ""
     frames_done: int = 0
+    check: Optional[ProxyCheck] = None
 
     @property
     def pixels_per_frame(self) -> int:
@@ -514,14 +702,17 @@ class ProxyBatch:
     Events passed to `callback(event, data)`, from worker threads:
       job_status    index, status, message
       job_progress  index, percent, fps
+      job_check     index, check (ProxyCheck for a created or skipped proxy)
       progress      percent, fps, eta (seconds, or None while measuring),
                     done, total (files finished or skipped / files in the batch)
-      finished      created, skipped, failed, cancelled, elapsed
+      finished      created, skipped, failed, cancelled, elapsed,
+                    checked, check_problems
     """
 
     def __init__(self, ffmpeg: str, ffprobe: str, caps: Capabilities, jobs: list[Job],
                  preset: Preset, parallel: int = 0, skip_existing: bool = True,
-                 low_priority: bool = True, callback: Optional[Callable] = None):
+                 low_priority: bool = True, callback: Optional[Callable] = None,
+                 verify: bool = True):
         self.ffmpeg = ffmpeg
         self.ffprobe = ffprobe
         self.caps = caps
@@ -530,6 +721,7 @@ class ProxyBatch:
         self.parallel = max(1, parallel or auto_parallel_jobs())
         self.skip_existing = skip_existing
         self.low_priority = low_priority
+        self.verify = verify
         self.callback = callback or (lambda event, data: None)
         self._stop = threading.Event()
         self._lock = threading.Lock()
@@ -605,12 +797,26 @@ class ProxyBatch:
         created = sum(1 for j in self.jobs if j.status == "Done")
         skipped = sum(1 for j in self.jobs if j.status == "Skipped")
         failed = sum(1 for j in self.jobs if j.status == "Failed")
+        checked = [j.check for j in self.jobs if j.check is not None]
         self._emit_progress(force=True)
         self._emit("finished", created=created, skipped=skipped, failed=failed,
-                   cancelled=self.cancelled, elapsed=time.perf_counter() - self._start)
+                   cancelled=self.cancelled, elapsed=time.perf_counter() - self._start,
+                   checked=len(checked), check_problems=sum(1 for c in checked if not c.ok))
+
+    def _verify(self, index: int):
+        job = self.jobs[index]
+        if self.cancelled or job.info is None:
+            return
+        job.check = check_proxy(self.ffprobe, job.info, job.output)
+        self._emit("job_check", index=index, check=job.check)
 
     def _run_job(self, index: int):
         job = self.jobs[index]
+        if job.status == "Skipped" and self.verify:
+            # An existing proxy may be from other media or an older version
+            # of the clip, so it is checked too.
+            self._verify(index)
+            return
         if job.info is None or job.status in ("Failed", "Skipped"):
             return
         if self.cancelled:
@@ -625,15 +831,15 @@ class ProxyBatch:
         # Write to a temporary name and rename on success, so a cancelled or
         # failed proxy never looks finished.
         partial = job.output.with_name(job.output.name + ".part")
-        use_gpu = self.caps.cuda_pipeline and job.info.codec in GPU_DECODABLE
-        attempts = [True, False] if use_gpu else [False]
         error = ""
-        for gpu in attempts:
+        for decode, encoder in encode_attempts(self.caps, job.info, self.preset):
             if self.cancelled:
                 break
             job.frames_done = 0
-            self._status(index, "Encoding", "GPU" if gpu else "CPU")
-            cmd = build_command(self.ffmpeg, job.info, self.preset, partial, self.caps, gpu)
+            label = attempt_label(decode, encoder)
+            self._status(index, "Encoding", label)
+            cmd = build_command(self.ffmpeg, job.info, self.preset, partial, self.caps,
+                                decode, encoder)
             ok, error = self._run_ffmpeg(index, cmd)
             if ok:
                 try:
@@ -642,8 +848,10 @@ class ProxyBatch:
                     error = f"Could not save the proxy: {exc}"
                     break
                 job.frames_done = job.info.frames
-                self._status(index, "Done", "GPU" if gpu else "CPU")
+                self._status(index, "Done", label)
                 self._emit_progress(force=True)
+                if self.verify:
+                    self._verify(index)
                 return
         try:
             partial.unlink(missing_ok=True)

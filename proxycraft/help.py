@@ -50,13 +50,29 @@ class HelpDialog(QDialog):
         copied unchanged when the container accepts it; otherwise it becomes PCM in MOV files and
         AAC in MP4 files.</p>
 
+        <h2>Proxy Check</h2>
+        <p>With <b>Check each proxy against its original</b> on (the default), every new proxy is
+        compared with its original: length, frame rate, timecode, number of audio tracks, rotation
+        and picture shape. The <b>Check</b> column shows <i>OK</i> or <i>Problems</i>; hover over a
+        result for details. Existing proxies that are skipped are checked too, which catches a proxy
+        made from an older version of a clip.</p>
+        <p>When the original does not store its frame count (MKV and some other formats), the length
+        is compared by duration instead.</p>
+        <p><b>Tools → Check Proxies</b> (Ctrl+K) checks the proxies you already have, using the
+        current format and destination to find them, without encoding anything.</p>
+
         <h2>Speed and Hardware</h2>
         <p>ProxyCraft checks what really works on your PC when it starts:</p>
         <ul>
           <li>With an NVIDIA GPU, video is decoded and resized on the GPU and H.264/H.265 is
           encoded with NVENC, without copying full-size frames through the CPU. ProRes is encoded
           on the CPU from GPU-resized frames.</li>
-          <li>Intel Quick Sync and AMD AMF are used for H.264/H.265 encoding when available.</li>
+          <li>With an Intel or AMD GPU, video is decoded on the GPU (D3D11) and resized on the
+          CPU. This covers H.264, H.265, AV1, VP9, MPEG-2 and VC-1 in 8-bit or 10-bit 4:2:0.</li>
+          <li>Intel Quick Sync and AMD AMF are used for H.264/H.265 encoding when available.
+          If a hardware encoder fails on a file (for example 10-bit H.265 on an older GPU), the
+          file is made with x264 or x265 on the CPU instead; the status shows <i>CPU, x264</i>
+          or <i>CPU, x265</i>.</li>
           <li>Files the GPU cannot decode, such as ProRes or DNxHR sources, are decoded on the CPU
           automatically. If GPU decoding fails for a file, it is retried on the CPU.</li>
           <li>Without a usable GPU, everything runs on the CPU (libx264, libx265, prores_ks).</li>
@@ -85,7 +101,8 @@ class HelpDialog(QDialog):
 
         <h2>Keyboard Shortcuts</h2>
         <p><b>Ctrl+O</b> Add Files &nbsp; <b>Ctrl+Shift+O</b> Add Folder &nbsp;
-        <b>Delete</b> Remove Selected &nbsp; <b>Ctrl+Enter</b> Create Proxies</p>
+        <b>Delete</b> Remove Selected &nbsp; <b>Ctrl+Enter</b> Create Proxies &nbsp;
+        <b>Ctrl+K</b> Check Proxies</p>
         <p>Double-click a finished file to open its proxy folder. Right-click a file for more options.</p>
         """)
         close = QPushButton("Close")

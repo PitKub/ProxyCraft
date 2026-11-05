@@ -21,7 +21,7 @@ from . import __version__
 from .core import (
     PRESETS, PRESETS_BY_KEY, SUPPORTED_EXTENSIONS, DEFAULT_SUFFIX,
     DEST_PROXIES_FOLDER, DEST_SAME_FOLDER, DEST_CUSTOM,
-    Capabilities, Job, ProxyBatch, detect_capabilities, probe_media,
+    Capabilities, Job, ProxyBatch, detect_capabilities, probe_media, check_proxy,
     collect_media, plan_outputs, auto_parallel_jobs, format_time, is_proxy_file,
 )
 from .help import HelpDialog
@@ -112,7 +112,7 @@ DESTINATION_MODES = [
     (DEST_CUSTOM, "One folder for all proxies"),
 ]
 
-COL_FILE, COL_RES, COL_CODEC, COL_DURATION, COL_PROXY, COL_STATUS = range(6)
+COL_FILE, COL_RES, COL_CODEC, COL_DURATION, COL_PROXY, COL_STATUS, COL_CHECK = range(7)
 
 
 def app_icon_path():
@@ -200,6 +200,38 @@ class ProbeWorker(QThread):
                 self.probed.emit(str(path), probe_media(self.ffprobe, path), "")
             except Exception as exc:
                 self.probed.emit(str(path), None, (str(exc).splitlines() or ["Unreadable file."])[0])
+
+
+class CheckWorker(QThread):
+    """Check existing proxies against their originals (Tools → Check Proxies)."""
+    checked = Signal(str, str, object, str)  # source key, proxy path, ProxyCheck or None, message
+
+    def __init__(self, ffprobe, pairs, infos, parent=None):
+        super().__init__(parent)
+        self.ffprobe = ffprobe
+        self.pairs = list(pairs)     # (source key, proxy Path)
+        self.infos = dict(infos)
+        self._stop = False
+
+    def stop(self):
+        self._stop = True
+
+    def run(self):
+        for key, output in self.pairs:
+            if self._stop:
+                return
+            if not output.is_file():
+                self.checked.emit(key, str(output), None, f"No proxy found at:\n{output}")
+                continue
+            info = self.infos.get(key)
+            if info is None:
+                try:
+                    info = probe_media(self.ffprobe, key)
+                except Exception as exc:
+                    first = (str(exc).splitlines() or [""])[0]
+                    self.checked.emit(key, str(output), None, f"The original cannot be read. {first}")
+                    continue
+            self.checked.emit(key, str(output), check_proxy(self.ffprobe, info, output), "")
 
 
 class BatchWorker(QThread):
@@ -321,9 +353,12 @@ class MainWindow(QMainWindow):
         self.capability_worker = None
         self.probe_workers = []
         self.batch_worker = None
+        self.check_worker = None
+        self.check_counts = {"ok": 0, "problems": 0, "missing": 0}
         self.items: dict[str, QTreeWidgetItem] = {}
         self.infos: dict = {}
         self.job_items: list[QTreeWidgetItem] = []
+        self.job_engines: list[str] = []
 
         self._build_menu()
         self._build_ui()
@@ -364,6 +399,11 @@ class MainWindow(QMainWindow):
         settings.triggered.connect(self.settings_dialog)
         redetect = QAction("Detect Hardware Again", self)
         redetect.triggered.connect(lambda: self._detect_hardware(refresh=True))
+        self.check_action = QAction("Check Proxies", self)
+        self.check_action.setShortcut(QKeySequence("Ctrl+K"))
+        self.check_action.triggered.connect(self.check_proxies)
+        tools.addAction(self.check_action)
+        tools.addSeparator()
         tools.addAction(settings)
         tools.addAction(redetect)
 
@@ -431,7 +471,8 @@ class MainWindow(QMainWindow):
         ll.addWidget(self.drop_hint)
 
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["File", "Resolution", "Codec", "Duration", "Proxy size", "Status"])
+        self.tree.setHeaderLabels(["File", "Resolution", "Codec", "Duration", "Proxy size",
+                                   "Status", "Check"])
         self.tree.setRootIsDecorated(False)
         self.tree.setAlternatingRowColors(True)
         self.tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -445,7 +486,11 @@ class MainWindow(QMainWindow):
         for col in (COL_RES, COL_CODEC, COL_DURATION, COL_PROXY):
             header.setSectionResizeMode(col, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(COL_STATUS, QHeaderView.Interactive)
-        self.tree.setColumnWidth(COL_STATUS, 220)
+        self.tree.setColumnWidth(COL_STATUS, 200)
+        header.setSectionResizeMode(COL_CHECK, QHeaderView.Interactive)
+        self.tree.setColumnWidth(COL_CHECK, 90)
+        self.tree.headerItem().setToolTip(
+            COL_CHECK, "Whether the proxy matches its original. Hover over a result for details.")
         ll.addWidget(self.tree, 1)
 
         progress_panel = QWidget()
@@ -530,7 +575,12 @@ class MainWindow(QMainWindow):
             "Keeps your editor responsive while proxies are made. "
             "It does not slow encoding when the PC is otherwise idle."
         )
-        for cb in (self.skip_existing, self.include_subfolders, self.low_priority):
+        self.verify = QCheckBox("Check each proxy against its original")
+        self.verify.setToolTip(
+            "After each proxy is made, compare its length, frame rate, timecode, audio tracks "
+            "and rotation with the original, so you know it will relink. Takes a moment per file."
+        )
+        for cb in (self.skip_existing, self.include_subfolders, self.low_priority, self.verify):
             ol.addWidget(cb)
         par_row = QHBoxLayout()
         par_row.addWidget(QLabel("Files at once"))
@@ -555,7 +605,8 @@ class MainWindow(QMainWindow):
         rl.addWidget(hw_box)
 
         note = QLabel("Proxies keep the original frame count, timecode, rotation and audio "
-                      "tracks, so editors can relink them to the full-resolution media.")
+                      "tracks, so editors can relink them to the full-resolution media. "
+                      "Tools → Check Proxies checks proxies you already have.")
         note.setObjectName("Hint")
         note.setWordWrap(True)
         rl.addWidget(note)
@@ -588,6 +639,8 @@ class MainWindow(QMainWindow):
         self.skip_existing.setChecked(as_bool("options/skip_existing", True))
         self.include_subfolders.setChecked(as_bool("options/include_subfolders", False))
         self.low_priority.setChecked(as_bool("options/low_priority", True))
+        self.verify.setChecked(as_bool("options/verify", True))
+        self.verify.toggled.connect(lambda v: self.settings.setValue("options/verify", v))
         self.skip_existing.toggled.connect(lambda v: self.settings.setValue("options/skip_existing", v))
         self.include_subfolders.toggled.connect(lambda v: self.settings.setValue("options/include_subfolders", v))
         self.low_priority.toggled.connect(lambda v: self.settings.setValue("options/low_priority", v))
@@ -668,7 +721,7 @@ class MainWindow(QMainWindow):
             self.add_paths([Path(folder)])
 
     def add_paths(self, paths):
-        if self.is_running():
+        if self.is_busy():
             return
         files = []
         for p in paths:
@@ -681,7 +734,7 @@ class MainWindow(QMainWindow):
             key = str(f)
             if key.lower() in (k.lower() for k in self.items):
                 continue
-            item = QTreeWidgetItem([f.name, "…", "…", "…", "…", "Waiting"])
+            item = QTreeWidgetItem([f.name, "…", "…", "…", "…", "Waiting", ""])
             item.setToolTip(COL_FILE, str(f))
             item.setData(COL_FILE, Qt.UserRole, key)
             self.tree.addTopLevelItem(item)
@@ -736,7 +789,7 @@ class MainWindow(QMainWindow):
         item.setText(COL_PROXY, f"{w}×{h}")
 
     def remove_selected(self):
-        if self.is_running():
+        if self.is_busy():
             return
         for item in self.tree.selectedItems():
             key = item.data(COL_FILE, Qt.UserRole)
@@ -746,7 +799,7 @@ class MainWindow(QMainWindow):
         self._update_controls()
 
     def clear_list(self):
-        if self.is_running():
+        if self.is_busy():
             return
         for worker in self.probe_workers:
             worker.stop()
@@ -768,7 +821,7 @@ class MainWindow(QMainWindow):
         open_proxy.setEnabled(item.data(COL_STATUS, Qt.UserRole) is not None)
         menu.addSeparator()
         remove = menu.addAction("Remove from List")
-        remove.setEnabled(not self.is_running())
+        remove.setEnabled(not self.is_busy())
         chosen = menu.exec(self.tree.viewport().mapToGlobal(pos))
         if chosen == open_src:
             self._open_path(Path(item.data(COL_FILE, Qt.UserRole)).parent)
@@ -788,7 +841,7 @@ class MainWindow(QMainWindow):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
     def dragEnterEvent(self, event):
-        if event.mimeData().hasUrls() and not self.is_running():
+        if event.mimeData().hasUrls() and not self.is_busy():
             event.acceptProposedAction()
 
     def dropEvent(self, event):
@@ -836,7 +889,12 @@ class MainWindow(QMainWindow):
         else:
             f = "FFmpeg: OK"
         p = "FFprobe: OK" if self.ffprobe else "FFprobe: NOT FOUND"
-        gpu = "GPU decoding: NVIDIA" if self.caps.cuda_pipeline else "GPU decoding: not available"
+        if self.caps.cuda_pipeline:
+            gpu = "GPU decoding: NVIDIA"
+        elif self.caps.d3d11_decode:
+            gpu = "GPU decoding: D3D11"
+        else:
+            gpu = "GPU decoding: not available"
         self.status.showMessage(f"{f}   |   {p}   |   {gpu}")
 
     # ----------------------------------------------------------------- run
@@ -844,16 +902,24 @@ class MainWindow(QMainWindow):
     def is_running(self):
         return self.batch_worker is not None and self.batch_worker.isRunning()
 
+    def is_checking(self):
+        return self.check_worker is not None and self.check_worker.isRunning()
+
+    def is_busy(self):
+        """Creating or checking proxies: the list and options are locked."""
+        return self.is_running() or self.is_checking()
+
     def _update_controls(self):
-        running = self.is_running()
+        running = self.is_busy()
         has_files = bool(self.items)
         ready = has_files and not running and bool(self.caps and self.caps.ok and self.ffprobe)
         self.start_button.setEnabled(ready)
         self.start_action.setEnabled(ready)
+        self.check_action.setEnabled(has_files and not running and bool(self.ffprobe))
         self.cancel_button.setEnabled(running)
         for w in (self.add_files_button, self.add_folder_button, self.remove_button,
                   self.clear_button, self.dest_combo, self.custom_dir, self.custom_browse,
-                  self.skip_existing, self.parallel_combo, self.low_priority):
+                  self.skip_existing, self.parallel_combo, self.low_priority, self.verify):
             w.setEnabled(not running)
         for rb in self.preset_buttons.values():
             rb.setEnabled(not running)
@@ -862,7 +928,7 @@ class MainWindow(QMainWindow):
         self.drop_hint.setVisible(not has_files)
 
     def start(self):
-        if self.is_running() or not self.items:
+        if self.is_busy() or not self.items:
             return
         if not (self.caps and self.caps.ok):
             QMessageBox.warning(self, "FFmpeg required",
@@ -885,10 +951,13 @@ class MainWindow(QMainWindow):
         sources = [Path(item.data(COL_FILE, Qt.UserRole)) for item in self.job_items]
         outputs = plan_outputs(sources, preset, mode, custom, self.suffix)
         jobs = [Job(s, o, self.infos.get(str(s))) for s, o in zip(sources, outputs)]
+        self.job_engines = [""] * len(jobs)
         for item in self.job_items:
             item.setText(COL_STATUS, "Waiting")
             item.setData(COL_STATUS, Qt.UserRole, None)
             item.setToolTip(COL_STATUS, "")
+            item.setText(COL_CHECK, "")
+            item.setToolTip(COL_CHECK, "")
             self._color_status(item)
 
         batch = ProxyBatch(
@@ -896,6 +965,7 @@ class MainWindow(QMainWindow):
             parallel=int(self.parallel_combo.currentData() or 0),
             skip_existing=self.skip_existing.isChecked(),
             low_priority=self.low_priority.isChecked(),
+            verify=self.verify.isChecked(),
         )
         self.batch_worker = BatchWorker(batch, self)
         self.batch_worker.event.connect(self._on_batch_event)
@@ -914,6 +984,70 @@ class MainWindow(QMainWindow):
             self.batch_worker.batch.cancel()
             self.cancel_button.setEnabled(False)
             self.current_label.setText("Cancelling…")
+        elif self.is_checking():
+            self.check_worker.stop()
+            self.cancel_button.setEnabled(False)
+            self.current_label.setText("Stopping the check…")
+
+    # ---------------------------------------------------------- proxy check
+
+    def check_proxies(self):
+        """Check the proxies the current settings point to, without encoding."""
+        if self.is_busy() or not self.items:
+            return
+        if not self.ffprobe:
+            QMessageBox.warning(self, "FFprobe required",
+                                "FFprobe was not found. Open Tools → Settings and select ffprobe.exe.")
+            return
+        mode = self.dest_combo.currentData()
+        custom = self.custom_dir.text().strip()
+        if mode == DEST_CUSTOM and not custom:
+            QMessageBox.information(self, "Destination", "Choose the folder that holds the proxies first.")
+            return
+        items = [self.tree.topLevelItem(i) for i in range(self.tree.topLevelItemCount())]
+        keys = [item.data(COL_FILE, Qt.UserRole) for item in items]
+        outputs = plan_outputs([Path(k) for k in keys], self.current_preset(), mode, custom, self.suffix)
+        for item in items:
+            item.setText(COL_CHECK, "Checking…")
+            item.setToolTip(COL_CHECK, "")
+            self._color_status(item)
+        self.check_counts = {"ok": 0, "problems": 0, "missing": 0}
+        self.check_worker = CheckWorker(self.ffprobe, zip(keys, outputs), self.infos, self)
+        self.check_worker.checked.connect(self._on_checked)
+        self.check_worker.finished.connect(self._on_check_finished)
+        self.current_label.setText(f"Checking {len(items)} proxies…")
+        self.check_worker.start()
+        self._update_controls()
+
+    def _on_checked(self, key, output, check, message):
+        item = self.items.get(key)
+        if item is None:
+            return
+        if check is None:
+            missing = not Path(output).is_file()
+            self.check_counts["missing" if missing else "problems"] += 1
+            item.setText(COL_CHECK, "No proxy" if missing else "Problems")
+            item.setToolTip(COL_CHECK, message)
+        else:
+            self.check_counts["ok" if check.ok else "problems"] += 1
+            self._show_check(item, check)
+            item.setData(COL_STATUS, Qt.UserRole, output)
+        self._color_status(item)
+
+    def _on_check_finished(self):
+        for item in self.items.values():
+            if item.text(COL_CHECK) == "Checking…":
+                item.setText(COL_CHECK, "")
+        c = self.check_counts
+        text = f"Checked proxies: {c['ok']} OK, {c['problems']} with problems"
+        if c["missing"]:
+            text += f", {c['missing']} without a proxy"
+        self.current_label.setText(text + ". Hover over a result for details.")
+        self._update_controls()
+
+    def _show_check(self, item, check):
+        item.setText(COL_CHECK, "OK" if check.ok else "Problems")
+        item.setToolTip(COL_CHECK, check.text())
 
     def _on_batch_event(self, name, data):
         if name == "job_status":
@@ -921,6 +1055,7 @@ class MainWindow(QMainWindow):
             status, message = data["status"], data["message"]
             job = self.batch_worker.batch.jobs[data["index"]]
             if status == "Encoding":
+                self.job_engines[data["index"]] = message
                 item.setText(COL_STATUS, f"Encoding ({message})")
             elif status == "Done":
                 item.setText(COL_STATUS, f"Done ({message})")
@@ -935,8 +1070,12 @@ class MainWindow(QMainWindow):
         elif name == "job_progress":
             item = self.job_items[data["index"]]
             if item.text(COL_STATUS).startswith("Encoding"):
-                where = "GPU" if "GPU" in item.text(COL_STATUS) else "CPU"
+                where = self.job_engines[data["index"]] or "CPU"
                 item.setText(COL_STATUS, f"Encoding ({where}) {data['percent']:.0f}%")
+        elif name == "job_check":
+            item = self.job_items[data["index"]]
+            self._show_check(item, data["check"])
+            self._color_status(item)
         elif name == "progress":
             self.progress.setValue(int(data["percent"] * 10))
             elapsed = format_time(time.monotonic() - self._started_at)
@@ -963,12 +1102,22 @@ class MainWindow(QMainWindow):
         self.progress.setValue(1000 if not data["failed"] else self.progress.value())
         summary = (f"Created {data['created']}, skipped {data['skipped']}, "
                    f"failed {data['failed']} in {elapsed}.")
+        problems = data.get("check_problems", 0)
+        if data.get("checked"):
+            summary += (f" Proxy check: {data['checked'] - problems} OK, "
+                        f"{problems} with problems.")
         self.current_label.setText(summary)
         box = QMessageBox(self)
         box.setWindowTitle("ProxyCraft")
-        box.setIcon(QMessageBox.Warning if data["failed"] else QMessageBox.Information)
-        box.setText("Proxy creation finished." if not data["failed"] else
-                    "Proxy creation finished with errors. Hover over a failed file's status for details.")
+        box.setIcon(QMessageBox.Warning if data["failed"] or problems else QMessageBox.Information)
+        if data["failed"]:
+            box.setText("Proxy creation finished with errors. "
+                        "Hover over a failed file's status for details.")
+        elif problems:
+            box.setText("Some proxies may not relink to their originals. "
+                        "Hover over Problems in the Check column for details.")
+        else:
+            box.setText("Proxy creation finished.")
         box.setInformativeText(summary)
         open_button = None
         first_output = next((i.data(COL_STATUS, Qt.UserRole) for i in self.job_items
@@ -992,6 +1141,10 @@ class MainWindow(QMainWindow):
         else:
             color = c["text"]
         item.setForeground(COL_STATUS, QBrush(QColor(color)))
+        check = item.text(COL_CHECK)
+        check_color = (c["done"] if check == "OK" else c["failed"] if check == "Problems"
+                       else c["muted"])
+        item.setForeground(COL_CHECK, QBrush(QColor(check_color)))
 
     # -------------------------------------------------------------- dialogs
 
@@ -1124,6 +1277,9 @@ class MainWindow(QMainWindow):
                 return
             self.batch_worker.batch.cancel()
             self.batch_worker.wait(10000)
+        if self.is_checking():
+            self.check_worker.stop()
+            self.check_worker.wait(35000)
         for worker in self.probe_workers:
             worker.stop()
             worker.wait(3000)
