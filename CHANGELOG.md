@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.1
+
+- **GPU decoding on Intel and AMD.** Files are now decoded on any GPU that supports Windows D3D11 video decoding, not only NVIDIA. This covers H.264, H.265, AV1, VP9, MPEG-2 and VC-1 in 8-bit or 10-bit 4:2:0. Resizing stays on the CPU. ProxyCraft tests that GPU decoding really works when it starts. If it fails for a file, that file is retried on the CPU automatically.
+- **Proxy check.** After each proxy is made, ProxyCraft compares it with its original: length (frame count, or duration when the original does not store a frame count), frame rate, timecode, number of audio tracks, rotation and picture shape. The results are shown in a new **Check** column, and the details appear when you hover over a result. Existing proxies that are skipped are checked too. You can turn this off with **Check each proxy against its original**.
+- **Software encoder fallback.** If a hardware H.264 or H.265 encoder (NVENC, Quick Sync or AMF) fails on a file, for example 10-bit H.265 on an older GPU, that file is made again with x264 or x265 on the CPU instead of failing. The status shows "CPU, x264" or "CPU, x265".
+- **Tools → Check Proxies** (Ctrl+K) checks the proxies you already have for the files in the list, without encoding anything.
+
 ## 1.0.0 — first public release
 
 - ProRes 422 Proxy (¼ and ½ size), ProRes 422 LT (½ size), H.264 (¼ and ½ size) and H.265 (¼ and ½ size) proxies.

@@ -10,15 +10,15 @@ ProxyCraft is a free, open-source Windows application for creating editing proxi
 
 ## Latest release
 
-Download **ProxyCraft 1.0.0 for Windows** from [GitHub Releases](https://github.com/PitKub/ProxyCraft/releases/latest).
+Download **ProxyCraft 1.0.1 for Windows** from [GitHub Releases](https://github.com/PitKub/ProxyCraft/releases/latest).
 
 ## Download and run
 
 From [GitHub Releases](https://github.com/PitKub/ProxyCraft/releases), download one of:
 
-- **ProxyCraft-1.0.0-Setup.exe** — recommended. A Windows installer with **FFmpeg included**. It asks whether to install for you only (no administrator rights; default folder `%LOCALAPPDATA%\Programs\ProxyCraft`) or for all users (`C:\Program Files\ProxyCraft`), and lets you choose a different folder. It adds ProxyCraft to the Start menu, optionally to the desktop, and to **Settings → Apps** for uninstalling.
-- **ProxyCraft-1.0.0-Windows.zip** — the portable version with FFmpeg included. Extract the whole ZIP to a folder and run `ProxyCraft.exe`.
-- **ProxyCraft-1.0.0-Windows-without-FFmpeg.zip** — the portable version without FFmpeg, for people who already have FFmpeg installed.
+- **ProxyCraft-1.0.1-Setup.exe** — recommended. A Windows installer with **FFmpeg included**. It asks whether to install for you only (no administrator rights; default folder `%LOCALAPPDATA%\Programs\ProxyCraft`) or for all users (`C:\Program Files\ProxyCraft`), and lets you choose a different folder. It adds ProxyCraft to the Start menu, optionally to the desktop, and to **Settings → Apps** for uninstalling.
+- **ProxyCraft-1.0.1-Windows.zip** — the portable version with FFmpeg included. Extract the whole ZIP to a folder and run `ProxyCraft.exe`.
+- **ProxyCraft-1.0.1-Windows-without-FFmpeg.zip** — the portable version without FFmpeg, for people who already have FFmpeg installed.
 
 **Requirements:** Windows 10 or Windows 11, 64-bit. Everything else ProxyCraft needs, including the Visual C++ runtime and (in the recommended downloads) FFmpeg, is included. An NVIDIA, Intel or AMD GPU makes proxies faster but is not required.
 
@@ -38,11 +38,14 @@ Windows SmartScreen may warn about a new, unsigned app. Select **More info → R
   - H.265, ½ size
 - **Fast on any PC.** ProxyCraft tests which encoders and decoders really work on your computer:
   - With an NVIDIA GPU, video is decoded, resized and encoded on the GPU.
+  - With an Intel or AMD GPU, video is decoded on the GPU (D3D11) and resized on the CPU.
   - Intel Quick Sync and AMD AMF are used for H.264 and H.265 encoding when available.
+  - If a hardware encoder fails on a file, that file is made with x264 or x265 instead.
   - Without a usable GPU, everything runs on the CPU.
 - **Several files at once.** Two files are encoded in parallel by default.
 - **Reliable time left.** The estimate uses the encoding speed of the last 30 seconds, counts 4K frames as more work than HD frames, and ignores skipped and failed files. The progress line also shows the expected finishing time.
 - **Proxies that relink.** Each proxy keeps the original's frame count, frame timing, timecode, rotation, color tags and every audio track.
+- **Proxy check.** Each new proxy is compared with its original: length, frame rate, timecode, audio tracks, rotation and picture shape. Any problem is shown before you start editing. **Tools → Check Proxies** checks proxies you already have.
 - **Safe batches.** Proxies are written to a temporary file and renamed when finished, so cancelling never leaves a half-written proxy. Files that already have a proxy can be skipped.
 - **Easy to add media.** Add files or whole folders, including subfolders, or drag them onto the window. Existing proxies and `Proxies` folders are never added as sources.
 - **Dark and Light themes**, remembered between launches.
@@ -98,6 +101,7 @@ H.264 and H.265 proxies have a keyframe every second and no B-frames, so they de
 - **Skip files that already have a proxy** — add a whole folder again after new footage arrives and only the new files are processed. H.264 and H.265 proxies share the `.mp4` name, so turn this off to replace one with the other.
 - **Include subfolders when adding a folder** — add a whole card or project folder at once.
 - **Run in the background (lower priority)** — keeps your editor responsive while proxies are made.
+- **Check each proxy against its original** — on by default. Results appear in the **Check** column; hover over one for details.
 - **Files at once** — how many files are encoded in parallel. Auto uses two.
 
 ## Controls
@@ -106,6 +110,7 @@ H.264 and H.265 proxies have a keyframe every second and no B-frames, so they de
 - **Ctrl+Shift+O** — Add Folder
 - **Delete** — Remove selected files from the list
 - **Ctrl+Enter** — Create Proxies
+- **Ctrl+K** — Check Proxies
 - **Double-click** a finished file to open its proxy folder; **right-click** for more options.
 
 ## Privacy
@@ -133,8 +138,8 @@ Run `build.bat` in the project folder. It:
 1. installs the build tools from `requirements.txt` (PySide6, Nuitka and Zig);
 2. compiles `dist\ProxyCraft.exe`;
 3. runs `get_ffmpeg.ps1` if FFmpeg has not been downloaded yet;
-4. creates `dist\ProxyCraft-1.0.0-Windows.zip` (with FFmpeg) and `dist\ProxyCraft-1.0.0-Windows-without-FFmpeg.zip`;
-5. creates the installer `dist\ProxyCraft-1.0.0-Setup.exe` from `installer\ProxyCraft.iss`, if [Inno Setup 6](https://jrsoftware.org/isinfo.php) is installed (`winget install --id JRSoftware.InnoSetup -e`).
+4. creates `dist\ProxyCraft-1.0.1-Windows.zip` (with FFmpeg) and `dist\ProxyCraft-1.0.1-Windows-without-FFmpeg.zip`;
+5. creates the installer `dist\ProxyCraft-1.0.1-Setup.exe` from `installer\ProxyCraft.iss`, if [Inno Setup 6](https://jrsoftware.org/isinfo.php) is installed (`winget install --id JRSoftware.InnoSetup -e`).
 
 The first build needs an internet connection and takes several minutes. The FFmpeg source archives for the release end up in `vendor\release-sources`.
 

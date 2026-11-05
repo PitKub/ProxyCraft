@@ -18,5 +18,5 @@ plugins = accessiblebridge,egldeviceintegrations,generic,iconengines,imageformat
 
 [nuitka]
 mode = onefile
-extra_args = --quiet --noinclude-qt-translations --zig --windows-console-mode=disable --windows-icon-from-ico=assets/ProxyCraft.ico --include-data-dir=assets=assets --windows-company-name=PitKub --windows-product-name=ProxyCraft --windows-file-description=ProxyCraft --windows-product-version=1.0.0.0 --windows-file-version=1.0.0.0
+extra_args = --quiet --noinclude-qt-translations --zig --windows-console-mode=disable --windows-icon-from-ico=assets/ProxyCraft.ico --include-data-dir=assets=assets --windows-company-name=PitKub --windows-product-name=ProxyCraft --windows-file-description=ProxyCraft --windows-product-version=1.0.1.0 --windows-file-version=1.0.1.0
 

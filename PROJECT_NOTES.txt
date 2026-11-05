@@ -1,4 +1,4 @@
-ProxyCraft 1.0.0 — package notes
+ProxyCraft 1.0.1 — package notes
 
 Layout:
 - proxycraft/core.py: FFmpeg detection, probing, command building and the parallel batch engine. No Qt dependency.
@@ -9,11 +9,20 @@ Layout:
 Encoding pipeline (chosen per file):
 - NVIDIA (CUDA available and NVENC opens): -hwaccel cuda -hwaccel_output_format cuda, scale_cuda, then
   h264_nvenc / hevc_nvenc directly, or hwdownload + prores_ks for ProRes.
+- Other GPUs (D3D11 decode works, CUDA pipeline does not): -hwaccel d3d11va -hwaccel_output_format d3d11,
+  then hwdownload,format=nv12|p010le and CPU scale, then the normal encoder. Only for codecs in
+  core.D3D11_DECODABLE with 4:2:0 8/10-bit sources. Frames stay on the GPU until hwdownload, so a
+  file the GPU cannot decode fails and is retried on the CPU instead of silently decoding in software.
+  Detected at startup by encoding a short H.264 sample and decoding it the same way.
 - Codecs the GPU cannot decode (ProRes, DNxHR, CineForm…) decode on the CPU. If GPU decoding fails for a
   file, it is retried on the CPU automatically.
 - CPU path: scale with flags=area (fastest good filter for 2x/4x reductions in testing), then the first
   hardware encoder that test-opened (NVENC, Quick Sync, AMF) or libx264 / libx265.
 - Every listed hardware encoder is test-opened at startup; FFmpeg builds list all vendors' encoders.
+- Software fallback (core.encode_attempts): the test only opens 8-bit 720p, so a hardware encoder can
+  still fail on a file (10-bit, unsupported size…). After the GPU and CPU decoding attempts, H.264/H.265
+  files get a last attempt with libx264/libx265 (if the build has them and they are not already the
+  chosen encoder). Each failed attempt restarts the file; hardware encoders usually fail at open.
 - Two files are encoded in parallel by default (fastest in testing on GPU and CPU).
 
 Proxy properties:
@@ -35,6 +44,13 @@ Build:
 - Settings are stored with QSettings under PitKub/ProxyCraft (Windows registry).
 - build.bat also creates dist/ProxyCraft-<version>-Windows.zip with the EXE, README, LICENSE and the
   third-party licence texts (Qt/PySide6 are LGPL-3.0 and must ship with their licence).
+
+Proxy check:
+- core.compare_media compares source and proxy MediaInfo: frame count when both files store one
+  (nb_frames), otherwise duration (1.5 frames tolerance, or 0.5 s when only the container duration is
+  known); frame rate within 0.5%; timecode; audio track count; rotation; aspect ratio within 2%.
+- ProxyBatch(verify=True) checks each Done and Skipped job and emits job_check. The window's
+  Tools → Check Proxies runs the same check through CheckWorker without encoding.
 
 Time left:
 - core.TimeEstimator: work = frames x source pixels (decoding dominates and scales with frame size).
