@@ -4,7 +4,7 @@ use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
 use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::Instant;
 
 use super::caps::Capabilities;
@@ -251,7 +251,7 @@ impl ProxyBatch {
         if let Ok(procs) = self.procs.lock() {
             for p in procs.iter() {
                 if let Ok(mut c) = p.lock() {
-                    let _ = c.kill();
+                    kill_tree(&mut c);
                 }
             }
         }
@@ -518,18 +518,56 @@ impl ProxyBatch {
         let child = Arc::new(Mutex::new(child));
         self.procs.lock().unwrap().push(child.clone());
         if self.cancelled() {
-            let _ = child.lock().unwrap().kill();
+            kill_tree(&mut child.lock().unwrap());
         }
-        let err_thread = std::thread::spawn(move || {
+        // Both pipes are read on their own threads. If FFmpeg was started through a launcher
+        // (such as a Chocolatey shim), a process it started can keep the pipes open after it
+        // exits; the batch then stops waiting for them shortly after the process has ended.
+        let (err_tx, err_rx) = mpsc::channel::<String>();
+        std::thread::spawn(move || {
             let mut text = String::new();
             if let Some(mut e) = stderr {
                 let _ = e.read_to_string(&mut text);
             }
-            text
+            let _ = err_tx.send(text);
+        });
+        let (line_tx, line_rx) = mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            if let Some(out) = stdout {
+                for line in BufReader::new(out).lines().map_while(Result::ok) {
+                    if line_tx.send(line).is_err() {
+                        break;
+                    }
+                }
+            }
         });
         let mut fps = 0.0;
-        if let Some(out) = stdout {
-            for line in BufReader::new(out).lines().map_while(Result::ok) {
+        let mut exited: Option<(std::io::Result<std::process::ExitStatus>, Instant)> = None;
+        let grace = std::time::Duration::from_secs(2);
+        loop {
+            // Poll instead of wait(): the lock must stay free so cancel() can kill the process.
+            if exited.is_none() {
+                match child.lock().unwrap().try_wait() {
+                    Ok(Some(s)) => exited = Some((Ok(s), Instant::now())),
+                    Ok(None) => {}
+                    Err(e) => exited = Some((Err(e), Instant::now())),
+                }
+            }
+            let line = match line_rx.recv_timeout(std::time::Duration::from_millis(20)) {
+                Ok(line) => line,
+                Err(mpsc::RecvTimeoutError::Disconnected) if exited.is_some() => break,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    continue;
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if exited.as_ref().is_some_and(|(_, at)| at.elapsed() > grace) {
+                        break;
+                    }
+                    continue;
+                }
+            };
+            {
                 let (key, value) = line.trim().split_once('=').unwrap_or((line.trim(), ""));
                 match key {
                     "frame" => {
@@ -551,16 +589,10 @@ impl ProxyBatch {
                 }
             }
         }
-        // Poll instead of wait(): the lock must stay free so cancel() can kill the process.
-        let status = loop {
-            match child.lock().unwrap().try_wait() {
-                Ok(Some(s)) => break Ok(s),
-                Ok(None) => {}
-                Err(e) => break Err(e),
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        };
-        let errors = err_thread.join().unwrap_or_default();
+        let status = exited
+            .map(|(s, _)| s)
+            .unwrap_or_else(|| Err(std::io::Error::other("FFmpeg did not exit")));
+        let errors = err_rx.recv_timeout(grace).unwrap_or_default();
         self.procs
             .lock()
             .unwrap()
@@ -584,6 +616,22 @@ impl ProxyBatch {
             (false, tail)
         }
     }
+}
+
+/// Stop FFmpeg and anything it started. On Windows the whole process tree is ended, in case
+/// ffmpeg.exe is a launcher that runs the real FFmpeg as a child process.
+fn kill_tree(child: &mut Child) {
+    #[cfg(windows)]
+    {
+        let pid = child.id().to_string();
+        let _ = command("taskkill", false)
+            .args(["/T", "/F", "/PID", &pid])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    let _ = child.kill();
 }
 
 #[cfg(test)]
