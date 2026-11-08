@@ -2,7 +2,7 @@ name: Build
 
 on:
   push:
-    branches: [rust]
+    branches: [main, rust]
   pull_request:
   workflow_dispatch:
 

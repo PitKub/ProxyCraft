@@ -49,6 +49,9 @@ Build:
 - Third-party licences: after changing dependencies, regenerate licenses/RUST_CRATES.md:
     cargo metadata --format-version 1 --filter-platform x86_64-pc-windows-msvc | python scripts/crate_licenses.py > licenses/RUST_CRATES.md
 - CI: .github/workflows/build.yml tests and builds on windows-latest and keeps ProxyCraft.exe.
+- Releases: raise the version in Cargo.toml (and CHANGELOG.md), push to main, then run
+  Actions → Release → Run workflow. It downloads the pinned FFmpeg, tests with it, builds the EXE,
+  both ZIPs and the installer, and publishes Release v<version> with checksums and FFmpeg sources.
 - Tests: cargo test. The end-to-end tests need ffmpeg/ffprobe on PATH (or vendor/ffmpeg) and are
   skipped otherwise.
 
