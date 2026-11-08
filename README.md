@@ -10,19 +10,19 @@ ProxyCraft is a free, open-source Windows application for creating editing proxi
 
 ## Latest release
 
-Download **ProxyCraft 1.0.1 for Windows** from [GitHub Releases](https://github.com/PitKub/ProxyCraft/releases/latest).
+Download **ProxyCraft 2.0.0 for Windows** from [GitHub Releases](https://github.com/PitKub/ProxyCraft/releases/latest).
 
 ## Download and run
 
 From [GitHub Releases](https://github.com/PitKub/ProxyCraft/releases), download one of:
 
-- **ProxyCraft-1.0.1-Setup.exe** — recommended. A Windows installer with **FFmpeg included**. It asks whether to install for you only (no administrator rights; default folder `%LOCALAPPDATA%\Programs\ProxyCraft`) or for all users (`C:\Program Files\ProxyCraft`), and lets you choose a different folder. It adds ProxyCraft to the Start menu, optionally to the desktop, and to **Settings → Apps** for uninstalling.
-- **ProxyCraft-1.0.1-Windows.zip** — the portable version with FFmpeg included. Extract the whole ZIP to a folder and run `ProxyCraft.exe`.
-- **ProxyCraft-1.0.1-Windows-without-FFmpeg.zip** — the portable version without FFmpeg, for people who already have FFmpeg installed.
+- **ProxyCraft-2.0.0-Setup.exe** — recommended. A Windows installer with **FFmpeg included**. It asks whether to install for you only (no administrator rights; default folder `%LOCALAPPDATA%\Programs\ProxyCraft`) or for all users (`C:\Program Files\ProxyCraft`), and lets you choose a different folder. It adds ProxyCraft to the Start menu, optionally to the desktop, and to **Settings → Apps** for uninstalling.
+- **ProxyCraft-2.0.0-Windows.zip** — the portable version with FFmpeg included. Extract the whole ZIP to a folder and run `ProxyCraft.exe`.
+- **ProxyCraft-2.0.0-Windows-without-FFmpeg.zip** — the portable version without FFmpeg, for people who already have FFmpeg installed.
 
 **Requirements:** Windows 10 or Windows 11, 64-bit. Everything else ProxyCraft needs, including the Visual C++ runtime and (in the recommended downloads) FFmpeg, is included. An NVIDIA, Intel or AMD GPU makes proxies faster but is not required.
 
-Python is not needed to run the compiled application. In the portable versions, keep the `ffmpeg` folder next to `ProxyCraft.exe`; ProxyCraft finds it there automatically. Settings are kept in the Windows registry, so installing a new version or moving the portable folder keeps them.
+ProxyCraft is a single native EXE; nothing else needs to be installed. In the portable versions, keep the `ffmpeg` folder next to `ProxyCraft.exe`; ProxyCraft finds it there automatically. Settings are kept in `%APPDATA%\PitKub\ProxyCraft\settings.json`, so installing a new version or moving the portable folder keeps them. Settings from ProxyCraft 1.x are imported automatically the first time 2.0 starts.
 
 Windows SmartScreen may warn about a new, unsigned app. Select **More info → Run anyway** if you downloaded it from this repository.
 
@@ -49,6 +49,7 @@ Windows SmartScreen may warn about a new, unsigned app. Select **More info → R
 - **Safe batches.** Proxies are written to a temporary file and renamed when finished, so cancelling never leaves a half-written proxy. Files that already have a proxy can be skipped.
 - **Easy to add media.** Add files or whole folders, including subfolders, or drag them onto the window. Existing proxies and `Proxies` folders are never added as sources.
 - **Dark and Light themes**, remembered between launches.
+- **Native and quick to start.** Since 2.0, ProxyCraft is written in Rust: one native EXE with no Python runtime or Qt inside.
 
 ## Speed
 
@@ -111,7 +112,9 @@ H.264 and H.265 proxies have a keyframe every second and no B-frames, so they de
 - **Delete** — Remove selected files from the list
 - **Ctrl+Enter** — Create Proxies
 - **Ctrl+K** — Check Proxies
+- **Ctrl+A** — Select all files in the list
 - **Double-click** a finished file to open its proxy folder; **right-click** for more options.
+- Files or folders can also be passed on the command line: `ProxyCraft.exe D:\Footage\Day1`.
 
 ## Privacy
 
@@ -119,40 +122,41 @@ ProxyCraft works offline. It does not send your media, settings or usage data an
 
 ## Run from source
 
-You need Windows and [Python](https://www.python.org/downloads/) 3.10 or newer.
+You need [Rust](https://rustup.rs) 1.95 or newer. On Windows, choose the default MSVC toolchain when rustup asks.
 
 ```bat
 git clone https://github.com/PitKub/ProxyCraft.git
 cd ProxyCraft
-python -m pip install PySide6==6.12.0
 powershell -ExecutionPolicy Bypass -File get_ffmpeg.ps1
-python -m proxycraft
+cargo run --release
 ```
 
 `get_ffmpeg.ps1` downloads the same FFmpeg build the releases include into `vendor\ffmpeg` and checks its SHA-256 checksum. You can skip it if FFmpeg is already installed.
+
+`cargo test` runs the unit tests and, when FFmpeg is installed, end-to-end tests that create every proxy format from generated clips and check that each one relinks to its original.
 
 ## Build the EXE
 
 Run `build.bat` in the project folder. It:
 
-1. installs the build tools from `requirements.txt` (PySide6, Nuitka and Zig);
-2. compiles `dist\ProxyCraft.exe`;
-3. runs `get_ffmpeg.ps1` if FFmpeg has not been downloaded yet;
-4. creates `dist\ProxyCraft-1.0.1-Windows.zip` (with FFmpeg) and `dist\ProxyCraft-1.0.1-Windows-without-FFmpeg.zip`;
-5. creates the installer `dist\ProxyCraft-1.0.1-Setup.exe` from `installer\ProxyCraft.iss`, if [Inno Setup 6](https://jrsoftware.org/isinfo.php) is installed (`winget install --id JRSoftware.InnoSetup -e`).
+1. runs the tests and compiles `dist\ProxyCraft.exe` with `cargo build --release`;
+2. runs `get_ffmpeg.ps1` if FFmpeg has not been downloaded yet;
+3. creates `dist\ProxyCraft-2.0.0-Windows.zip` (with FFmpeg) and `dist\ProxyCraft-2.0.0-Windows-without-FFmpeg.zip`;
+4. creates the installer `dist\ProxyCraft-2.0.0-Setup.exe` from `installer\ProxyCraft.iss`, if [Inno Setup 6](https://jrsoftware.org/isinfo.php) is installed (`winget install --id JRSoftware.InnoSetup -e`).
 
-The first build needs an internet connection and takes several minutes. The FFmpeg source archives for the release end up in `vendor\release-sources`.
+The first build needs an internet connection to download the Rust libraries and FFmpeg. The FFmpeg source archives for the release end up in `vendor\release-sources`. Every push to this branch is also built and tested on GitHub Actions, which keeps `ProxyCraft.exe` as a download.
 
 ## Project layout
 
 | Path | Contents |
 |---|---|
-| `proxycraft/core.py` | FFmpeg detection, media probing, FFmpeg commands and the parallel batch engine (no Qt) |
-| `proxycraft/main.py` | The window, settings and dialogs |
-| `proxycraft/help.py` | The User Guide |
-| `launcher.py` | Entry point for the EXE build |
+| `src/engine/` | FFmpeg detection, media probing, FFmpeg commands, proxy check and the parallel batch engine (no user-interface code) |
+| `src/main.rs`, `src/theme.rs` | The window, dialogs and Dark/Light themes (egui) |
+| `src/settings.rs` | Saved settings, including the import from ProxyCraft 1.x |
+| `src/help_text.rs` | The User Guide |
+| `tests/` | End-to-end tests with real FFmpeg |
 | `assets/` | App icon |
-| `build.bat`, `pysidedeploy.spec`, `requirements.txt` | Windows build |
+| `build.rs`, `build.bat` | Windows build (icon and version information are embedded in the EXE) |
 | `get_ffmpeg.ps1` | Downloads and verifies the included FFmpeg and its source (`vendor\`, not in git) |
 | `installer/ProxyCraft.iss` | Inno Setup script for the Windows installer |
 | `PROJECT_NOTES.txt` | How the encoding pipeline works |
@@ -169,7 +173,7 @@ Copyright © 2026 Piotr Kubicki.
 
 ## Third-party software
 
-The Windows EXE includes Qt and PySide6, licensed under the LGPL-3.0, and the Python runtime. The recommended release ZIP also includes FFmpeg, licensed under the GPL-3.0. FFmpeg is a separate program that ProxyCraft runs; it does not change ProxyCraft's MIT licence. Its source code is attached to every release. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and the `licenses` folder for details.
+The Windows EXE is built from open-source Rust libraries, including egui and eframe for the window; almost all are under the MIT or Apache-2.0 licences. The recommended release ZIP also includes FFmpeg, licensed under the GPL-3.0. FFmpeg is a separate program that ProxyCraft runs; it does not change ProxyCraft's MIT licence. Its source code is attached to every release. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and the `licenses` folder for details.
 
 ## Donations and contact
 

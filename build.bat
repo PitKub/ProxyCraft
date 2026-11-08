@@ -2,28 +2,30 @@
 setlocal
 cd /d "%~dp0"
 
-python -m pip install -r requirements.txt
-if errorlevel 1 goto :failed
+rem ProxyCraft Windows build: EXE, ZIPs and installer in dist\.
+rem Needs Rust (https://rustup.rs, MSVC toolchain) and an internet connection for the first build.
 
-for /f "delims=" %%S in ('python -c "import sysconfig; print(sysconfig.get_path('scripts'))"') do set "PY_SCRIPTS=%%S"
-if not exist "%PY_SCRIPTS%\pyside6-deploy.exe" goto :missing_deploy
+where cargo >nul 2>nul
+if errorlevel 1 goto :missing_cargo
+
+cargo test --release
+if errorlevel 1 goto :failed
+cargo build --release
+if errorlevel 1 goto :failed
+if not exist "target\release\ProxyCraft.exe" goto :missing_exe
 
 if not exist "dist" mkdir "dist"
+copy /Y "target\release\ProxyCraft.exe" "dist\ProxyCraft.exe" >nul
 if errorlevel 1 goto :failed
-
-"%PY_SCRIPTS%\pyside6-deploy.exe" -c pysidedeploy.spec --force --nuitka-version 4.3.4
-if errorlevel 1 goto :failed
-if not exist "dist\ProxyCraft.exe" goto :missing_exe
-
-if exist "dist\assets" rmdir /S /Q "dist\assets"
 copy /Y "README.md" "dist\README.md" >nul
 if errorlevel 1 goto :failed
 copy /Y "LICENSE" "dist\LICENSE.txt" >nul
 if errorlevel 1 goto :failed
 copy /Y "THIRD_PARTY_NOTICES.md" "dist\THIRD_PARTY_NOTICES.md" >nul
 if errorlevel 1 goto :failed
-if not exist "dist\licenses" mkdir "dist\licenses"
-copy /Y "licenses\*.txt" "dist\licenses\" >nul
+if exist "dist\licenses" rmdir /S /Q "dist\licenses"
+mkdir "dist\licenses"
+copy /Y "licenses\*.*" "dist\licenses\" >nul
 if errorlevel 1 goto :failed
 
 rem Included FFmpeg: downloaded once into vendor\ffmpeg by get_ffmpeg.ps1.
@@ -35,8 +37,12 @@ if exist "dist\ffmpeg" rmdir /S /Q "dist\ffmpeg"
 xcopy /E /I /Y /Q "vendor\ffmpeg" "dist\ffmpeg" >nul
 if errorlevel 1 goto :failed
 
-rem Release ZIPs: the EXE together with the licence files Qt's LGPL and FFmpeg's GPL require.
-for /f "delims=" %%V in ('python -c "import proxycraft; print(proxycraft.__version__)"') do set "APP_VERSION=%%V"
+rem Version from Cargo.toml (the first line that starts with version =).
+for /f "tokens=2 delims==" %%V in ('findstr /B /C:"version =" Cargo.toml') do if not defined APP_VERSION set "APP_VERSION=%%~V"
+set "APP_VERSION=%APP_VERSION: =%"
+set "APP_VERSION=%APP_VERSION:"=%"
+
+rem Release ZIPs: the EXE together with the licence files FFmpeg's GPL and the Rust libraries require.
 set "ZIP_NAME=ProxyCraft-%APP_VERSION%-Windows.zip"
 set "ZIP_NO_FFMPEG=ProxyCraft-%APP_VERSION%-Windows-without-FFmpeg.zip"
 set "COMMON='dist\ProxyCraft.exe','dist\README.md','dist\LICENSE.txt','dist\THIRD_PARTY_NOTICES.md','dist\licenses'"
@@ -61,7 +67,7 @@ if defined ISCC (
 )
 
 echo.
-echo Build complete.
+echo Build complete: ProxyCraft %APP_VERSION%
 echo EXE: dist\ProxyCraft.exe (finds dist\ffmpeg next to it)
 if defined SETUP_NAME echo Installer:          dist\%SETUP_NAME%
 echo ZIP with FFmpeg:    dist\%ZIP_NAME%
@@ -70,13 +76,13 @@ echo FFmpeg source to attach to the release: vendor\release-sources\
 pause
 exit /b 0
 
-:missing_deploy
-echo Could not find pyside6-deploy.exe in the Python Scripts folder.
-echo Check that Python was installed correctly, then run build.bat again.
+:missing_cargo
+echo Rust was not found. Install it from https://rustup.rs (choose the default MSVC toolchain),
+echo open a new Command Prompt, then run build.bat again.
 goto :failed
 
 :missing_exe
-echo The build finished without creating dist\ProxyCraft.exe.
+echo The build finished without creating target\release\ProxyCraft.exe.
 goto :failed
 
 :failed

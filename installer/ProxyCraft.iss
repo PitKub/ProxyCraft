@@ -1,12 +1,12 @@
 ; ProxyCraft installer (Inno Setup 6). build.bat compiles it after building dist\.
-;   ISCC.exe /DAppVersion=1.0.1 installer\ProxyCraft.iss
+;   ISCC.exe /DAppVersion=2.0.0 installer\ProxyCraft.iss
 ;
 ; The installer asks whether to install for the current user (no administrator
 ; rights, default folder %LOCALAPPDATA%\Programs\ProxyCraft) or for all users
 ; (C:\Program Files\ProxyCraft), and lets the user choose another folder.
 
 #ifndef AppVersion
-  #define AppVersion "1.0.1"
+  #define AppVersion "2.0.0"
 #endif
 
 [Setup]
@@ -56,6 +56,10 @@ Source: "..\dist\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\dist\LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\dist\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\dist\licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion
+
+[InstallDelete]
+; ProxyCraft 1.x shipped Qt's LGPL text; 2.0 no longer contains Qt.
+Type: files; Name: "{app}\licenses\LGPL-3.0.txt"
 
 [Icons]
 Name: "{autoprograms}\ProxyCraft"; Filename: "{app}\ProxyCraft.exe"

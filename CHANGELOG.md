@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.0.0 — Rust edition
+
+ProxyCraft has been rewritten in Rust. It works the same way and makes the same proxies, but the app itself is new:
+
+- **One native EXE.** No Python runtime or Qt inside, and nothing is unpacked to a temporary folder at start-up. The window uses egui.
+- **Same proxies.** The FFmpeg commands, GPU detection (NVIDIA CUDA, D3D11 decoding on Intel and AMD, Quick Sync, AMF), software fallback, proxy check and time-left estimate are ported unchanged.
+- **Settings carry over.** Settings are now stored in `%APPDATA%\PitKub\ProxyCraft\settings.json`. Settings from ProxyCraft 1.x are imported the first time 2.0 starts.
+- **Same installer.** Installing 2.0 upgrades 1.x in place, keeping the chosen folder and shortcuts.
+- **New:** Ctrl+A selects all files, and files or folders can be passed on the command line (`ProxyCraft.exe D:\Footage`).
+- **Tested end to end.** Automated tests create every proxy format from generated clips (H.264 with timecode, 10-bit HEVC with Opus audio, rotated video with two audio tracks) and check that each proxy relinks; skipping, unreadable files, a custom folder and cancelling are tested too.
+
 ## 1.0.1
 
 - **GPU decoding on Intel and AMD.** Files are now decoded on any GPU that supports Windows D3D11 video decoding, not only NVIDIA. This covers H.264, H.265, AV1, VP9, MPEG-2 and VC-1 in 8-bit or 10-bit 4:2:0. Resizing stays on the CPU. ProxyCraft tests that GPU decoding really works when it starts. If it fails for a file, that file is retried on the CPU automatically.

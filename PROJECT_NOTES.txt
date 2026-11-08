@@ -1,17 +1,20 @@
-ProxyCraft 1.0.1 — package notes
+ProxyCraft 2.0.0 (Rust) — package notes
 
 Layout:
-- proxycraft/core.py: FFmpeg detection, probing, command building and the parallel batch engine. No Qt dependency.
-- proxycraft/main.py: PySide6 window, settings and dialogs (same theme and style as SphereCraft 360).
-- proxycraft/help.py: User Guide dialog.
-- launcher.py: entry point for the Windows build. Run from source with: python -m proxycraft
+- src/engine/: FFmpeg detection (caps.rs), probing and the proxy check (media.rs), command building
+  (command.rs), output planning (plan.rs), the parallel batch engine (batch.rs) and process start-up
+  (process.rs). No user-interface code; the window receives batch events through a channel.
+- src/main.rs: egui/eframe window, dialogs and worker threads. src/theme.rs: Dark/Light colours
+  (same values as 1.x). src/settings.rs: settings. src/help_text.rs: User Guide text.
+- src/tools.rs: finding ffmpeg/ffprobe. tests/ffmpeg_engine.rs: end-to-end tests with real FFmpeg.
+- ProxyCraft 1.x (Python/PySide6) is on the main branch; this branch is the Rust rewrite.
 
 Encoding pipeline (chosen per file):
 - NVIDIA (CUDA available and NVENC opens): -hwaccel cuda -hwaccel_output_format cuda, scale_cuda, then
   h264_nvenc / hevc_nvenc directly, or hwdownload + prores_ks for ProRes.
 - Other GPUs (D3D11 decode works, CUDA pipeline does not): -hwaccel d3d11va -hwaccel_output_format d3d11,
   then hwdownload,format=nv12|p010le and CPU scale, then the normal encoder. Only for codecs in
-  core.D3D11_DECODABLE with 4:2:0 8/10-bit sources. Frames stay on the GPU until hwdownload, so a
+  engine::command::D3D11_DECODABLE with 4:2:0 8/10-bit sources. Frames stay on the GPU until hwdownload, so a
   file the GPU cannot decode fails and is retried on the CPU instead of silently decoding in software.
   Detected at startup by encoding a short H.264 sample and decoding it the same way.
 - Codecs the GPU cannot decode (ProRes, DNxHR, CineForm…) decode on the CPU. If GPU decoding fails for a
@@ -19,7 +22,7 @@ Encoding pipeline (chosen per file):
 - CPU path: scale with flags=area (fastest good filter for 2x/4x reductions in testing), then the first
   hardware encoder that test-opened (NVENC, Quick Sync, AMF) or libx264 / libx265.
 - Every listed hardware encoder is test-opened at startup; FFmpeg builds list all vendors' encoders.
-- Software fallback (core.encode_attempts): the test only opens 8-bit 720p, so a hardware encoder can
+- Software fallback (engine::command::encode_attempts): the test only opens 8-bit 720p, so a hardware encoder can
   still fail on a file (10-bit, unsupported size…). After the GPU and CPU decoding attempts, H.264/H.265
   files get a last attempt with libx264/libx265 (if the build has them and they are not already the
   chosen encoder). Each failed attempt restarts the file; hardware encoders usually fail at open.
@@ -33,27 +36,31 @@ Proxy properties:
 - Output is written to <name>.part and renamed on success; cancelled/failed files are deleted.
 
 Build:
-- Run build.bat on Windows with Python 3.10 or newer and an internet connection.
-- The build uses PySide6 deployment and Nuitka 4.3.4 to create dist/ProxyCraft.exe.
-- The EXE icon is embedded from assets/ProxyCraft.ico. Version is set in proxycraft/__init__.py and in
-  pysidedeploy.spec (--windows-product-version / --windows-file-version); update both for each release.
-- Runtime: the onefile EXE carries the Visual C++ runtime (vcruntime140*.dll, msvcp140*.dll from Python
-  and PySide6). It uses only the Universal CRT (ucrtbase.dll) from Windows, which is part of Windows 10+.
-  Nuitka's "Cannot find Windows Runtime DLLs" warning refers to that UCRT and only matters for
-  Windows 7/8.1, which are not supported (the installer has MinVersion=10.0).
-- Settings are stored with QSettings under PitKub/ProxyCraft (Windows registry).
-- build.bat also creates dist/ProxyCraft-<version>-Windows.zip with the EXE, README, LICENSE and the
-  third-party licence texts (Qt/PySide6 are LGPL-3.0 and must ship with their licence).
+- Run build.bat on Windows with Rust 1.95+ (rustup, MSVC toolchain) and an internet connection.
+- cargo build --release creates target/release/ProxyCraft.exe (thin LTO, stripped, panic=abort).
+- build.rs embeds assets/ProxyCraft.ico and the version information (from Cargo.toml) in the EXE.
+  The version is set only in Cargo.toml; build.bat and the installer read it from there.
+- .cargo/config.toml links the Visual C++ runtime statically (+crt-static), so the EXE needs nothing
+  but Windows 10/11. The window draws with wgpu (eframe's default renderer);
+  release builds use the Windows GUI subsystem, so no console window opens.
+- Settings: JSON in %APPDATA%\PitKub\ProxyCraft\settings.json (PROXYCRAFT_SETTINGS overrides the path,
+  used by the tests). On the first start, the 1.x QSettings values in HKCU\Software\PitKub\ProxyCraft
+  are imported.
+- Third-party licences: after changing dependencies, regenerate licenses/RUST_CRATES.md:
+    cargo metadata --format-version 1 --filter-platform x86_64-pc-windows-msvc | python scripts/crate_licenses.py > licenses/RUST_CRATES.md
+- CI: .github/workflows/build.yml tests and builds on windows-latest and keeps ProxyCraft.exe.
+- Tests: cargo test. The end-to-end tests need ffmpeg/ffprobe on PATH (or vendor/ffmpeg) and are
+  skipped otherwise.
 
 Proxy check:
-- core.compare_media compares source and proxy MediaInfo: frame count when both files store one
+- engine::media::compare_media compares source and proxy MediaInfo: frame count when both files store one
   (nb_frames), otherwise duration (1.5 frames tolerance, or 0.5 s when only the container duration is
   known); frame rate within 0.5%; timecode; audio track count; rotation; aspect ratio within 2%.
-- ProxyBatch(verify=True) checks each Done and Skipped job and emits job_check. The window's
-  Tools → Check Proxies runs the same check through CheckWorker without encoding.
+- ProxyBatch with BatchOptions.verify checks each Done and Skipped job and emits Event::JobCheck. The
+  window's Tools → Check Proxies runs the same check on a worker thread without encoding.
 
 Time left:
-- core.TimeEstimator: work = frames x source pixels (decoding dominates and scales with frame size).
+- engine::batch::TimeEstimator: work = frames x source pixels (decoding dominates and scales with frame size).
   Speed from the last 30 s of samples, starting at the first encoded frame; skipped/failed/cancelled
   jobs are excluded; existing proxies are marked Skipped before encoding starts. Lightly smoothed.
 - Tested on a mixed batch (HD then 4K, 3 skipped, 1 broken): 19% average error vs 71% for the

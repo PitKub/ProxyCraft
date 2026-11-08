@@ -2,21 +2,20 @@
 
 ProxyCraft's own code is released under the MIT License (see `LICENSE`). The Windows EXE also contains, or works with, the third-party software below. Their licences are separate from ProxyCraft's.
 
-## Qt and PySide6 (bundled in ProxyCraft.exe)
+## Rust libraries (built into ProxyCraft.exe)
 
-ProxyCraft uses **Qt for Python (PySide6) 6.12.0** and the **Qt 6** libraries it includes, © The Qt Company Ltd. and other contributors.
+ProxyCraft.exe is compiled from ProxyCraft's own code and about 200 unmodified open-source Rust libraries (crates) from <https://crates.io>, including **egui**, **eframe** and **egui_extras** (the window, © Emil Ernerfeldt and contributors), **wgpu** (drawing), **winit** (windowing), **rfd** (file dialogs), **serde**, **chrono** and **dirs**.
 
-- Licence: GNU Lesser General Public License v3 (LGPL-3.0). The full texts are in `licenses/LGPL-3.0.txt` and `licenses/GPL-3.0.txt`.
-- Source code: PySide6 at <https://code.qt.io/cgit/pyside/pyside-setup.git/> and Qt at <https://download.qt.io/official_releases/qt/>.
-- ProxyCraft does not modify Qt or PySide6. Because ProxyCraft's own source is public, you can rebuild the EXE with any compatible PySide6 version; see "Build the EXE" in `README.md`.
+- Almost all are licensed under the MIT License or the Apache License 2.0 (usually both, as alternatives). A few use the Boost Software License 1.0, the Unicode License v3, the Zlib License, the ISC License or the Mozilla Public License 2.0 (`option-ext`, used unmodified; its source is at <https://github.com/soc/option-ext>).
+- The full list of crates, versions, licences and source links is in `licenses/RUST_CRATES.md`, with the licence texts in the `licenses` folder.
 
-## Python (bundled in ProxyCraft.exe)
+## Fonts (built into ProxyCraft.exe)
 
-The EXE contains the **Python** runtime and standard library, © Python Software Foundation, licensed under the Python Software Foundation License: <https://docs.python.org/3/license.html>.
+egui embeds these fonts, used unmodified:
 
-## Nuitka (build tool)
-
-The EXE is compiled with **Nuitka 4.3.4**: <https://nuitka.net>. See Nuitka's own documentation for the terms that apply to programs it compiles.
+- **Ubuntu Light**, © Canonical Ltd., under the Ubuntu Font Licence 1.0 (`licenses/Ubuntu-Font-Licence-1.0.txt`).
+- **Hack**, © Source Foundry Authors, under the MIT License and the Bitstream Vera licence.
+- **Noto Emoji**, © Google Inc., and **emoji-icon-font**, under the SIL Open Font License 1.1 (`licenses/OFL-1.1.txt`) and the MIT License.
 
 ## FFmpeg and FFprobe (included in the recommended release ZIP)
 

@@ -1,0 +1,43 @@
+[package]
+name = "proxycraft"
+version = "2.0.0"
+edition = "2021"
+rust-version = "1.95"
+description = "Fast proxy creator for video editing"
+authors = ["Piotr Kubicki"]
+license = "MIT"
+repository = "https://github.com/PitKub/ProxyCraft"
+build = "build.rs"
+
+[lib]
+name = "proxycraft"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ProxyCraft"
+path = "src/main.rs"
+
+[dependencies]
+eframe = "0.37"
+egui_extras = "0.37"
+rfd = "0.18"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+dirs = "6"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"
